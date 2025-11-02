@@ -1,54 +1,57 @@
-name: Deploy Application
+name: CI - Build, Test, Push, Deploy
 
 on:
   push:
-    branches:
-      - main        # Pipeline uruchamia się po każdej zmianie w gałęzi main
-  workflow_dispatch: # Pozwala uruchomić ręcznie z poziomu GitHub UI
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
-  build-and-push:
+  build-test-push:
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
-      packages: write    # wymagane do pushowania obrazu do GHCR
-
     steps:
-      # 1️⃣ Pobierz kod z repozytorium
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # 2️⃣ Zaloguj się do GitHub Container Registry
-      - name: Log in to GitHub Container Registry
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install deps and run tests
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pytest
+
+      - name: Login to GHCR
         run: echo "${{ secrets.CR_PAT }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      # 3️⃣ Zbuduj obraz Dockera
-      - name: Build Docker image
+      - name: Build and push image
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/automatyzacja-deploymentu:${{ github.sha }}
         run: |
-          IMAGE_NAME=ghcr.io/${{ github.repository }}/automatyzacja-deploymentu:latest
-          docker build -t $IMAGE_NAME .
-          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
+          docker build -t $IMAGE .
+          docker push $IMAGE
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
 
-      # 4️⃣ Wypchnij (push) obraz do rejestru
-      - name: Push Docker image
-        run: docker push ${{ env.IMAGE_NAME }}
-
-  # 🔧 (opcjonalnie) Wdrożenie na zdalny serwer
-  deploy:
-    needs: build-and-push
+  deploy-via-ssh:
+    needs: build-test-push
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
-
     steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
+      - name: Deploy to server via SSH
+        uses: appleboy/ssh-action@v1.8.0
         with:
+          #host: ${{ secrets.SERVER_HOST }}
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_DEPLOY_KEY }}
           script: |
-            docker pull ${{ env.IMAGE_NAME }}
+            docker pull ${{ env.IMAGE }}
             docker stop automatyzacja-app || true
             docker rm automatyzacja-app || true
-            docker run -d --name automatyzacja-app -p 5000:5000 ${{ env.IMAGE_NAME }}
+            docker run -d --name automatyzacja-app -p 5000:5000 ${{ env.IMAGE }}
