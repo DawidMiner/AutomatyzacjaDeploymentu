@@ -1,41 +1,54 @@
-name: CI/CD Pipeline
+name: Deploy Application
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main        # Pipeline uruchamia się po każdej zmianie w gałęzi main
+  workflow_dispatch: # Pozwala uruchomić ręcznie z poziomu GitHub UI
 
 jobs:
-  build:
+  build-and-push:
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: read
+      packages: write    # wymagane do pushowania obrazu do GHCR
+
     steps:
-      - name: Checkout
+      # 1️⃣ Pobierz kod z repozytorium
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
+      # 2️⃣ Zaloguj się do GitHub Container Registry
+      - name: Log in to GitHub Container Registry
+        run: echo "${{ secrets.CR_PAT }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run tests
-        run: pytest
-
-  docker:
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
+      # 3️⃣ Zbuduj obraz Dockera
       - name: Build Docker image
-        run: docker build -t myapp:latest .
+        run: |
+          IMAGE_NAME=ghcr.io/${{ github.repository }}/automatyzacja-deploymentu:latest
+          docker build -t $IMAGE_NAME .
+          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
 
+      # 4️⃣ Wypchnij (push) obraz do rejestru
+      - name: Push Docker image
+        run: docker push ${{ env.IMAGE_NAME }}
+
+  # 🔧 (opcjonalnie) Wdrożenie na zdalny serwer
   deploy:
+    needs: build-and-push
     runs-on: ubuntu-latest
-    needs: docker
+    if: github.ref == 'refs/heads/main'
+
     steps:
-      - name: Deploy placeholder
-        run: echo "Tutaj można dodać wdrożenie np. na Heroku / AWS / VPS"
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_DEPLOY_KEY }}
+          script: |
+            docker pull ${{ env.IMAGE_NAME }}
+            docker stop automatyzacja-app || true
+            docker rm automatyzacja-app || true
+            docker run -d --name automatyzacja-app -p 5000:5000 ${{ env.IMAGE_NAME }}
